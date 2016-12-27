@@ -15,6 +15,8 @@ from keras.layers.convolutional import MaxPooling2D
 from keras.layers.normalization import BatchNormalization
 from keras.models import load_model
 
+if "../" not in sys.path:
+    sys.path.append("../")
 
 class ImgBuf:
     """
@@ -81,6 +83,18 @@ def preprocess(img):
     img = img[::2, ::2, 1]  # downsample by factor of 2
     return img.astype(np.float)
 
+def clip_reward(reward):
+    """
+    Clips the rewards to either -1, 0 or 1 for more stable training of the network
+    :param reward: int
+    :return: clipped reward, int
+    """
+
+    if reward > 0:
+        reward = 1
+    elif reward < 0:
+        reward = -1
+    return reward
 
 def make_init_replay(env, replay, eps):
     """
@@ -89,9 +103,10 @@ def make_init_replay(env, replay, eps):
     :param env: OpenAI gym env
     :param replay: ReplayBuf object
     :param eps: probability that the tuple (s_t, a_t, reward, s_t_plus_1) will be added to replay
+
     :return: replay: a full replay buffer
     """
-    episode_len = 30000
+    max_episode_len = 30000
     frame_buf = ImgBuf((3, 80, 80))
     i = 0
 
@@ -102,7 +117,7 @@ def make_init_replay(env, replay, eps):
         s_t = frame_buf.get()
         a_t = env.action_space.sample()
 
-        for t in range(episode_len):
+        for t in range(max_episode_len):
 
             if s_t_plus_1 is not None:
                 s_t = s_t_plus_1
@@ -113,18 +128,12 @@ def make_init_replay(env, replay, eps):
             s_t_plus_1 = frame_buf.get()
 
             if np.random.rand() < eps:
-                # Clip positive and negative rewards
-                if reward > 0:
-                    reward = 1
-                elif reward < 0:
-                    reward = -1
-
-                replay.append(s_t, a_t, reward, s_t_plus_1)
+                replay.append(s_t, a_t, clip_reward(reward), s_t_plus_1)
                 i += 1
 
             a_t_plus_1 = env.action_space.sample()
 
-            if done or t == (episode_len-1):
+            if done or t == (max_episode_len-1):
                 frame_buf.empty()
                 replay.append(s_t_plus_1, a_t_plus_1, -1, s_t_plus_1)
                 break
@@ -160,14 +169,14 @@ def make_model(n_actions=9):
     return model
 
 
-def train(model, replay, discount_factor=.999, epochs=10, rep_s=3200):
+def train(model, replay, discount_factor=.999, epochs=10):
     batchsize = 64
     s_t, a_t, reward, s_t_plus_1 = (replay.s_t, replay.action, replay.reward, replay.s_t_plus_1)
 
     s_t_Q = model.predict(s_t)
     s_t_plus_1_Q = model.predict(s_t_plus_1)
 
-    TD_error = a_t * (reward + discount_factor * np.amax(s_t_plus_1_Q, axis=1)).reshape(rep_s, 1) - a_t * s_t_Q
+    TD_error = a_t * (reward + discount_factor * np.amax(s_t_plus_1_Q, axis=1)).reshape(replay.shape[0], 1) - a_t * s_t_Q
 
     target = s_t_Q + TD_error
     model.fit(s_t, target, nb_epoch=epochs, batch_size=batchsize)
@@ -179,13 +188,11 @@ def make_epsilon_greedy_policy(estimator, epsilon, n_actions):
     """
     Creates an epsilon-greedy policy based on a given Q-function approximator and epsilon.
 
-    Args:
-        estimator: An estimator that returns q values for a given frame_buf
-        epsilon: The probability to select a random action . float between 0 and 1.
-        n_actions: Number of actions in the environment.
+    :param estimator: An estimator that returns q values for a given frame_buf
+    :param epsilon: The probability to select a random action . float between 0 and 1.
+    :param n_actions: Number of actions in the environment.
 
-    Returns:
-        A function that takes the observation as an argument and returns
+    :return a function that takes the observation as an argument and returns
         the probabilities for each action in the form of a numpy array of length n_actions.
 
     """
@@ -201,8 +208,7 @@ def make_epsilon_greedy_policy(estimator, epsilon, n_actions):
 
 
 def main():
-    if "../" not in sys.path:
-        sys.path.append("../")
+
 
     resume = 0
     replay_size = 26000
@@ -238,7 +244,7 @@ def main():
             init = tf.global_variables_initializer()
             sess.run(init)
 
-            Q1 = train(Q1, replay, rep_s=replay_size, discount_factor=discount_factor, epochs=10)
+            Q1 = train(Q1, replay, discount_factor=discount_factor, epochs=10)
             Q1.save('Q1.h5')
 
             for i_episode in range(num_episodes):
@@ -269,12 +275,12 @@ def main():
                     a_t_plus_1 = np.random.choice(np.arange(len(action_probs)), p=action_probs)
 
                     if np.random.rand() < add_to_rep_prob:
-                        replay.append(s_t, a_t, reward, s_t_plus_1)
+                        replay.append(s_t, a_t, clip_reward(reward), s_t_plus_1)
 
                     stats['rewards'][i_episode] += reward
                     if done or t == (max_episode_len-1):
                         frame_buf.empty()
-                        Q1 = train(Q1, replay, epochs=3, rep_s=replay_size)
+                        Q1 = train(Q1, replay, discount_factor=discount_factor, epochs=3)
                         Q1.save('Q1.h5')
                         # sys.stdout.flush()
                         print("episode ", i_episode, " done in ", t, " steps, reward is ", stats['rewards'][i_episode])

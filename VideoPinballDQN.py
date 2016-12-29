@@ -170,7 +170,7 @@ def make_model(n_actions=9):
 
 
 def train(model, replay, discount_factor=.999, epochs=10):
-    batchsize = 64
+    batchsize = 128
     s_t, a_t, reward, s_t_plus_1 = (replay.s_t, replay.action, replay.reward, replay.s_t_plus_1)
 
     s_t_Q = model.predict(s_t)
@@ -209,9 +209,8 @@ def make_epsilon_greedy_policy(estimator, epsilon, n_actions):
 
 def main():
 
-
     resume = 0
-    replay_size = 26000
+    replay_size = 40000
     add_to_rep_prob = .1
     num_episodes = 100
     max_episode_len = 100000
@@ -219,17 +218,16 @@ def main():
     epsilon_decay = .99
     frame_buf = ImgBuf((3, 80, 80))
     discount_factor = .999
+    stats = np.zeros((3, num_episodes))
 
     env = gym.envs.make("VideoPinball-v0")
     env.reset()
 
     replay = ReplayBuf(shape=(replay_size, 3, 80, 80), n_actions=env.action_space.n)
     print("making init replay ...")
-    make_init_replay(env=env, replay=replay, eps=0.2)
+    make_init_replay(env=env, replay=replay, eps=0.05)
     print("init replay done")
     print(replay.s_t.shape)
-
-    stats = collections.defaultdict(lambda: np.zeros(num_episodes))
 
     tf.python.control_flow_ops = tf
     with tf.Session(config=tf.ConfigProto(log_device_placement=True, allow_soft_placement=True)) as sess:
@@ -277,14 +275,16 @@ def main():
                     if np.random.rand() < add_to_rep_prob:
                         replay.append(s_t, a_t, clip_reward(reward), s_t_plus_1)
 
-                    stats['rewards'][i_episode] += reward
+                    stats[0, i_episode] += reward
+                    stats[1, i_episode] += clip_reward(reward)
                     if done or t == (max_episode_len-1):
                         frame_buf.empty()
                         Q1 = train(Q1, replay, discount_factor=discount_factor, epochs=3)
                         Q1.save('Q1.h5')
                         # sys.stdout.flush()
-                        print("episode ", i_episode, " done in ", t, " steps, reward is ", stats['rewards'][i_episode])
-                        stats['episode_lengths'][i_episode] = t
+                        print("episode ", i_episode, " done in ", t, " steps, reward is ", stats[0, i_episode])
+                        stats[2, i_episode] = t
+                        np.savetxt('stats-pinball.txt', stats)
                         break
 
 
